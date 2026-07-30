@@ -39,6 +39,10 @@ function isImageFile(filePath) {
  */
 async function runTesseractOCR(filePath) {
   try {
+    // Tesseract only supports image files, NOT PDFs
+    if (!isImageFile(filePath)) {
+      return '';
+    }
     console.log(`[OCR] Running Tesseract on: ${path.basename(filePath)}`);
     const result = await Tesseract.recognize(filePath, 'eng', {
       logger: () => {} // suppress progress logs
@@ -66,7 +70,7 @@ export async function extractRawText(filePath) {
       if (ocrText.length > 10) return ocrText;
     }
     
-    // 2. PDF FILES -> pdf-parse first, then Tesseract fallback for scanned PDFs
+    // 2. PDF FILES -> pdf-parse only (Tesseract cannot read PDFs)
     if (filePath.toLowerCase().endsWith('.pdf') || rawBuffer.toString('utf8', 0, 4) === '%PDF') {
       try {
         const parsed = await pdfParse(rawBuffer);
@@ -75,9 +79,8 @@ export async function extractRawText(filePath) {
         }
       } catch (pdfErr) {}
       
-      // Scanned PDF fallback -> try Tesseract on the PDF directly
-      const ocrText = await runTesseractOCR(filePath);
-      if (ocrText.length > 10) return ocrText;
+      // For scanned PDFs with no extractable text, return empty
+      return '';
     }
     
     // 3. Plain text fallback
