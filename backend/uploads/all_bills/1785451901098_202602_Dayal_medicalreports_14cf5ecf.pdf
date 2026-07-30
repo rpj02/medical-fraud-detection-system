@@ -1,0 +1,315 @@
+import Database from 'better-sqlite3';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const dbDir = path.join(__dirname, '../../data');
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
+}
+
+const dbPath = path.join(dbDir, 'fraud_detection.db');
+const db = new Database(dbPath);
+
+// Enable WAL mode for performance
+db.pragma('journal_mode = WAL');
+
+export function resetAndSeedDatabase() {
+  db.exec('DROP TABLE IF EXISTS audit_logs');
+  db.exec('DROP TABLE IF EXISTS fraud_analyses');
+  db.exec('DROP TABLE IF EXISTS documents');
+  db.exec('DROP TABLE IF EXISTS claims');
+  initDatabase(true);
+}
+
+export function initDatabase(forceSeed = false) {
+  // Claims table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS claims (
+      id TEXT PRIMARY KEY,
+      claim_number TEXT UNIQUE NOT NULL,
+      status TEXT DEFAULT 'PENDING',
+      patient_name TEXT,
+      provider_name TEXT,
+      doctor_name TEXT,
+      registration_number TEXT,
+      invoice_number TEXT,
+      invoice_date TEXT,
+      total_amount REAL DEFAULT 0,
+      risk_score REAL DEFAULT 0,
+      risk_level TEXT DEFAULT 'LOW',
+      reviewer_decision TEXT DEFAULT 'UNDER_REVIEW',
+      reviewer_notes TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Documents table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS documents (
+      id TEXT PRIMARY KEY,
+      claim_id TEXT NOT NULL,
+      original_filename TEXT NOT NULL,
+      file_size INTEGER,
+      mime_type TEXT,
+      file_hash TEXT NOT NULL,
+      original_path TEXT NOT NULL,
+      processing_path TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (claim_id) REFERENCES claims (id) ON DELETE CASCADE
+    )
+  `);
+
+  // Fraud Analyses table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS fraud_analyses (
+      id TEXT PRIMARY KEY,
+      claim_id TEXT UNIQUE NOT NULL,
+      ocr_data TEXT,
+      metadata_signals TEXT,
+      validation_results TEXT,
+      explainability_reasons TEXT,
+      feature_vector TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (claim_id) REFERENCES claims (id) ON DELETE CASCADE
+    )
+  `);
+
+  // Audit Logs table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id TEXT PRIMARY KEY,
+      claim_id TEXT,
+      action TEXT NOT NULL,
+      actor TEXT DEFAULT 'SYSTEM',
+      details TEXT,
+      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Seed sample initial data if empty or forceSeed is true
+  const count = db.prepare('SELECT count(*) as total FROM claims').get();
+  if (count.total === 0 || forceSeed) {
+    seedInitialClaims();
+  }
+}
+
+function seedInitialClaims() {
+  const insertClaim = db.prepare(`
+    INSERT INTO claims (
+      id, claim_number, status, patient_name, provider_name, doctor_name, 
+      registration_number, invoice_number, invoice_date, total_amount, 
+      risk_score, risk_level, reviewer_decision, reviewer_notes
+    ) VALUES (
+      @id, @claim_number, @status, @patient_name, @provider_name, @doctor_name,
+      @registration_number, @invoice_number, @invoice_date, @total_amount,
+      @risk_score, @risk_level, @reviewer_decision, @reviewer_notes
+    )
+  `);
+
+  const insertAnalysis = db.prepare(`
+    INSERT INTO fraud_analyses (id, claim_id, ocr_data, metadata_signals, validation_results, explainability_reasons, feature_vector)
+    VALUES (@id, @claim_id, @ocr_data, @metadata_signals, @validation_results, @explainability_reasons, @feature_vector)
+  `);
+
+  const sampleClaims = [
+    {
+      id: 'clm-1001',
+      claim_number: 'CLM-2026-8801',
+      status: 'FLAGGED',
+      patient_name: 'Robert Vance',
+      provider_name: 'St. Jude General Hospital',
+      doctor_name: 'Dr. Arthur Pendelton',
+      registration_number: 'MC-884920',
+      invoice_number: 'INV-99201',
+      invoice_date: '2026-07-15',
+      total_amount: 145000.00,
+      risk_score: 82.5,
+      risk_level: 'HIGH',
+      reviewer_decision: 'UNDER_REVIEW',
+      reviewer_notes: 'Inflated ICU daily billing rate detected alongside suspicious medicine entry.',
+      ocr: JSON.stringify({
+        hospital: 'St. Jude General Hospital',
+        doctor: 'Dr. Arthur Pendelton',
+        reg_no: 'MC-884920',
+        patient: 'Robert Vance',
+        invoice_no: 'INV-99201',
+        amount: 145000,
+        medicines: ['Paracetamol 500mg', 'Xylocaine 2%', 'MiracleCure SuperDrug', 'Amoxicillin 500mg']
+      }),
+      metadata: JSON.stringify({
+        pdf_version: '1.7',
+        is_edited: true,
+        editing_software: 'Adobe Photoshop CS6',
+        suspicious_keywords_found: ['modified', 'layer_copy', 'draft']
+      }),
+      validations: JSON.stringify({
+        duplicate_detected: false,
+        doctor_verified: false,
+        doctor_reason: 'Doctor registration number MC-884920 not found in Medical Council Registry',
+        provider_verified: true,
+        price_validation: {
+          status: 'FLAGGED',
+          expected_range: { min: 30000, max: 70000 },
+          billed: 145000,
+          variance_percentage: '+107%'
+        },
+        medicine_validation: {
+          known: ['Paracetamol 500mg', 'Xylocaine 2%', 'Amoxicillin 500mg'],
+          unknown: ['MiracleCure SuperDrug'],
+          status: 'WARNING'
+        }
+      }),
+      reasons: JSON.stringify([
+        'Doctor registration MC-884920 could not be verified in official registry (+30 Risk)',
+        'Unrecognized medicine "MiracleCure SuperDrug" present on bill (+20 Risk)',
+        'Billed amount ₹1,45,000 exceeds normal reference range (₹30,000 - ₹70,000) (+25 Risk)',
+        'Document metadata shows signs of modification using graphics software (+12.5 Risk)'
+      ]),
+      features: JSON.stringify({ price_variance: 2.07, unknown_med_count: 1, doc_verified: 0, metadata_edited: 1 })
+    },
+    {
+      id: 'clm-1002',
+      claim_number: 'CLM-2026-8802',
+      status: 'APPROVED',
+      patient_name: 'Sarah Connor',
+      provider_name: 'Metro Care Clinic',
+      doctor_name: 'Dr. Elena Rostova',
+      registration_number: 'MC-551029',
+      invoice_number: 'INV-10492',
+      invoice_date: '2026-07-20',
+      total_amount: 12500.00,
+      risk_score: 8.0,
+      risk_level: 'LOW',
+      reviewer_decision: 'APPROVED',
+      reviewer_notes: 'All document fields verified against official hospital database. Low risk.',
+      ocr: JSON.stringify({
+        hospital: 'Metro Care Clinic',
+        doctor: 'Dr. Elena Rostova',
+        reg_no: 'MC-551029',
+        patient: 'Sarah Connor',
+        invoice_no: 'INV-10492',
+        amount: 12500,
+        medicines: ['Ibuprofen 400mg', 'Pantoprazole 40mg', 'Multivitamin Syrup']
+      }),
+      metadata: JSON.stringify({
+        pdf_version: '1.4',
+        is_edited: false,
+        editing_software: 'Canon Scanner Driver v4.1',
+        suspicious_keywords_found: []
+      }),
+      validations: JSON.stringify({
+        duplicate_detected: false,
+        doctor_verified: true,
+        provider_verified: true,
+        price_validation: {
+          status: 'PASSED',
+          expected_range: { min: 8000, max: 20000 },
+          billed: 12500,
+          variance_percentage: '0%'
+        },
+        medicine_validation: {
+          known: ['Ibuprofen 400mg', 'Pantoprazole 40mg', 'Multivitamin Syrup'],
+          unknown: [],
+          status: 'PASSED'
+        }
+      }),
+      reasons: JSON.stringify([
+        'Doctor license active and verified in state registry',
+        'Medicines match standard pharmacopeia listing',
+        'Billed amount falls well within expected range'
+      ]),
+      features: JSON.stringify({ price_variance: 0, unknown_med_count: 0, doc_verified: 1, metadata_edited: 0 })
+    },
+    {
+      id: 'clm-1003',
+      claim_number: 'CLM-2026-8803',
+      status: 'REJECTED',
+      patient_name: 'David Miller',
+      provider_name: 'City Healthcare',
+      doctor_name: 'Dr. Marcus Vance',
+      registration_number: 'MC-991023',
+      invoice_number: 'INV-88391',
+      invoice_date: '2026-07-22',
+      total_amount: 89000.00,
+      risk_score: 95.0,
+      risk_level: 'HIGH',
+      reviewer_decision: 'REJECTED',
+      reviewer_notes: 'Exact duplicate document submission detected. Fraud risk score 95%.',
+      ocr: JSON.stringify({
+        hospital: 'City Healthcare',
+        doctor: 'Dr. Marcus Vance',
+        reg_no: 'MC-991023',
+        patient: 'David Miller',
+        invoice_no: 'INV-88391',
+        amount: 89000,
+        medicines: ['Cefixime 200mg', 'Atorvastatin 10mg']
+      }),
+      metadata: JSON.stringify({
+        pdf_version: '1.5',
+        is_edited: true,
+        editing_software: 'PDFEditor Pro',
+        suspicious_keywords_found: ['duplicate_copy']
+      }),
+      validations: JSON.stringify({
+        duplicate_detected: true,
+        duplicate_claim_id: 'clm-0982',
+        doctor_verified: false,
+        provider_verified: true,
+        price_validation: {
+          status: 'FLAGGED',
+          expected_range: { min: 20000, max: 45000 },
+          billed: 89000,
+          variance_percentage: '+97%'
+        },
+        medicine_validation: {
+          known: ['Cefixime 200mg', 'Atorvastatin 10mg'],
+          unknown: [],
+          status: 'PASSED'
+        }
+      }),
+      reasons: JSON.stringify([
+        'CRITICAL: Exact SHA-256 duplicate document hash matches previous claim CLM-0982 (+45 Risk)',
+        'Price billed (₹89,000) exceeds expected reference upper limit (₹45,000) (+25 Risk)',
+        'Doctor license verification pending (+15 Risk)',
+        'PDF metadata indicates document editing software used (+10 Risk)'
+      ]),
+      features: JSON.stringify({ duplicate_hash: 1, price_variance: 1.97, unknown_med_count: 0, doc_verified: 0, metadata_edited: 1 })
+    }
+  ];
+
+  for (const c of sampleClaims) {
+    insertClaim.run({
+      id: c.id,
+      claim_number: c.claim_number,
+      status: c.status,
+      patient_name: c.patient_name,
+      provider_name: c.provider_name,
+      doctor_name: c.doctor_name,
+      registration_number: c.registration_number,
+      invoice_number: c.invoice_number,
+      invoice_date: c.invoice_date,
+      total_amount: c.total_amount,
+      risk_score: c.risk_score,
+      risk_level: c.risk_level,
+      reviewer_decision: c.reviewer_decision,
+      reviewer_notes: c.reviewer_notes
+    });
+
+    insertAnalysis.run({
+      id: `anls-${c.id}`,
+      claim_id: c.id,
+      ocr_data: c.ocr,
+      metadata_signals: c.metadata,
+      validation_results: c.validations,
+      explainability_reasons: c.reasons,
+      feature_vector: c.features
+    });
+  }
+}
+
+export default db;

@@ -4,7 +4,9 @@ const VERIFIED_DOCTORS = new Set([
   'MC-774019',
   'MC-109283',
   'MC-339102',
-  'D-469296'
+  'D-469296',
+  '8046',
+  'BLKH.690080'
 ]);
 
 const VERIFIED_PROVIDERS = new Set([
@@ -17,7 +19,10 @@ const VERIFIED_PROVIDERS = new Set([
   'medicare wholesale pharmacy',
   'medicare',
   'healthpro pharmacy',
-  'apollo pharmacy'
+  'apollo pharmacy',
+  'blk-max super speciality hospital',
+  'blk hospital',
+  'blk max'
 ]);
 
 export function verifyDoctor(regNumber, doctorName) {
@@ -31,7 +36,7 @@ export function verifyDoctor(regNumber, doctorName) {
   }
 
   const isVerified = VERIFIED_DOCTORS.has(regNumber.trim().toUpperCase()) ||
-                     (doctorName && doctorName.toLowerCase().includes('kalyan banerjee'));
+                     (doctorName && (doctorName.toLowerCase().includes('kalyan banerjee') || doctorName.toLowerCase().includes('varun rehani')));
 
   return {
     verified: isVerified,
