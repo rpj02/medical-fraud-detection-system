@@ -5,6 +5,13 @@ const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
 
 /**
+ * Clean & sanitize text: strip non-printable binary characters
+ */
+function sanitizeText(str = '') {
+  return str.replace(/[^\x20-\x7E\n]/g, '').trim();
+}
+
+/**
  * Synchronously or asynchronously extracts raw text from PDF/Image/Text files.
  */
 export async function extractRawText(filePath) {
@@ -17,14 +24,14 @@ export async function extractRawText(filePath) {
       try {
         const parsed = await pdfParse(rawBuffer);
         if (parsed && parsed.text && parsed.text.trim().length > 0) {
-          return parsed.text;
+          return sanitizeText(parsed.text);
         }
       } catch (pdfErr) {
-        // Fallback to buffer text regex parsing if pdfParse encounters non-standard font streams
+        // Fallback
       }
     }
     
-    return rawBuffer.toString('utf8');
+    return sanitizeText(rawBuffer.toString('utf8'));
   } catch (err) {
     return '';
   }
@@ -101,7 +108,8 @@ export async function validateMedicalDocument(filePath, originalFilename) {
  * Parses uploaded document (text/PDF/image) and extracts structured medical claim fields.
  */
 export async function extractFieldsFromDocument(filePath, originalFilename) {
-  const fileText = await extractRawText(filePath);
+  const rawText = await extractRawText(filePath);
+  const fileText = sanitizeText(rawText);
 
   // Pattern extractors
   const hospitalMatch = fileText.match(/Hospital:\s*([^\n\r]+)/i) || 
@@ -126,9 +134,11 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
   const medicineLines = [];
   const lines = fileText.split('\n');
   for (const line of lines) {
-    if (/(?:mg|ml|tablet|capsule|syrup|inj|gel|inhaler|paracetamol|amoxicillin|pantoprazole|ibuprofen|cefixime|cefuroxime|azithromycin)/i.test(line)) {
-      const cleanLine = line.trim().replace(/^[^a-zA-Z0-9]+/, '');
-      if (cleanLine.length > 3 && cleanLine.length < 80) {
+    const sanitizedLine = sanitizeText(line);
+    if (/(?:mg|ml|tablet|capsule|syrup|inj|gel|inhaler|paracetamol|amoxicillin|pantoprazole|ibuprofen|cefixime|cefuroxime|azithromycin)/i.test(sanitizedLine)) {
+      const cleanLine = sanitizedLine.replace(/^[^a-zA-Z0-9]+/, '').trim();
+      // Enforce strict printable alphanumeric check (no binary symbols allowed)
+      if (cleanLine.length >= 3 && cleanLine.length <= 60 && /^[a-zA-Z0-9\s.,%()/-]+$/.test(cleanLine)) {
         medicineLines.push(cleanLine);
       }
     }
@@ -137,11 +147,11 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
   const extractedAmount = amountMatch ? parseFloat(amountMatch[1].replace(/,/g, '')) : null;
 
   return {
-    hospital: hospitalMatch ? hospitalMatch[1].trim() : 'Metro General Health Institute',
-    doctor: doctorMatch ? doctorMatch[1].trim() : 'Dr. R. K. Sharma',
-    reg_no: regMatch ? regMatch[1].trim() : 'MC-559102',
-    patient: patientMatch ? patientMatch[1].trim() : 'Patient Record',
-    invoice_no: invoiceMatch ? invoiceMatch[1].trim() : `INV-${Math.floor(10000 + Math.random() * 90000)}`,
+    hospital: hospitalMatch ? sanitizeText(hospitalMatch[1]) : 'Metro General Health Institute',
+    doctor: doctorMatch ? sanitizeText(doctorMatch[1]) : 'Dr. R. K. Sharma',
+    reg_no: regMatch ? sanitizeText(regMatch[1]) : 'MC-559102',
+    patient: patientMatch ? sanitizeText(patientMatch[1]) : 'Patient Record',
+    invoice_no: invoiceMatch ? sanitizeText(invoiceMatch[1]) : `INV-${Math.floor(10000 + Math.random() * 90000)}`,
     invoice_date: dateMatch ? dateMatch[1] : new Date().toISOString().split('T')[0],
     amount: extractedAmount || Math.floor(4500 + Math.random() * 12500),
     medicines: medicineLines.length > 0 ? medicineLines.slice(0, 6) : [

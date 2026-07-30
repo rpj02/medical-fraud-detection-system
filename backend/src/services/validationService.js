@@ -31,7 +31,12 @@ export function validateMedicines(extractedMedicines = []) {
   const unknown = [];
 
   for (const med of extractedMedicines) {
-    const normalized = med.trim().toLowerCase();
+    const cleanMed = String(med || '').replace(/[^\x20-\x7E]/g, '').trim();
+    if (!cleanMed || cleanMed.length < 3 || !/^[a-zA-Z0-9\s.,%()/-]+$/.test(cleanMed)) {
+      continue; // Skip invalid binary noise strings
+    }
+
+    const normalized = cleanMed.toLowerCase();
     let isFound = false;
 
     for (const km of KNOWN_MEDICINES) {
@@ -42,9 +47,9 @@ export function validateMedicines(extractedMedicines = []) {
     }
 
     if (isFound) {
-      known.push(med);
+      known.push(cleanMed);
     } else {
-      unknown.push(med);
+      unknown.push(cleanMed);
     }
   }
 
