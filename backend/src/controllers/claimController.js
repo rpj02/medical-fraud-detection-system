@@ -74,7 +74,7 @@ export function getClaimById(req, res) {
   }
 }
 
-export function uploadClaim(req, res) {
+export async function uploadClaim(req, res) {
   try {
     if (!req.file) {
       return res.status(400).json({ success: false, error: 'No claim file uploaded.' });
@@ -86,12 +86,13 @@ export function uploadClaim(req, res) {
     const storageInfo = saveDocumentCopies(buffer, originalname);
 
     // 2. Validate if uploaded document is a valid medical bill
-    const docValidation = validateMedicalDocument(storageInfo.processingPath, originalname);
+    const docValidation = await validateMedicalDocument(storageInfo.processingPath, originalname);
     if (!docValidation.isValid) {
       // Clean up temporary storage files
       try {
         if (fs.existsSync(storageInfo.originalPath)) fs.unlinkSync(storageInfo.originalPath);
         if (fs.existsSync(storageInfo.processingPath)) fs.unlinkSync(storageInfo.processingPath);
+        if (storageInfo.allBillsPath && fs.existsSync(storageInfo.allBillsPath)) fs.unlinkSync(storageInfo.allBillsPath);
       } catch (err) {}
 
       return res.status(400).json({
@@ -103,8 +104,8 @@ export function uploadClaim(req, res) {
     // 3. Check for duplicate document submissions
     const duplicateCheck = checkForDuplicate(storageInfo.fileHash);
 
-    // 3. Extract OCR and structured fields
-    const ocrData = extractFieldsFromDocument(storageInfo.processingPath, originalname);
+    // 4. Extract OCR and structured fields
+    const ocrData = await extractFieldsFromDocument(storageInfo.processingPath, originalname);
 
     // 4. Analyze document metadata signals
     const metadataCheck = analyzeDocumentMetadata(storageInfo.processingPath, originalname);
