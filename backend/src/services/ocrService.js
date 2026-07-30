@@ -22,13 +22,12 @@ function isImageFile(filePath) {
   if (['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff', '.tif', '.gif'].includes(ext)) {
     return true;
   }
-  // Check magic bytes for common image formats
   try {
     const buf = fs.readFileSync(filePath, { length: 8 });
     const header = buf.toString('hex', 0, 4);
     if (header.startsWith('89504e47')) return true; // PNG
     if (header.startsWith('ffd8ff')) return true;   // JPEG
-    if (header.startsWith('52494646')) return true;  // WEBP (RIFF)
+    if (header.startsWith('52494646')) return true;  // WEBP
     if (header.startsWith('424d')) return true;      // BMP
   } catch (e) {}
   return false;
@@ -39,13 +38,10 @@ function isImageFile(filePath) {
  */
 async function runTesseractOCR(filePath) {
   try {
-    // Tesseract only supports image files, NOT PDFs
-    if (!isImageFile(filePath)) {
-      return '';
-    }
+    if (!isImageFile(filePath)) return '';
     console.log(`[OCR] Running Tesseract on: ${path.basename(filePath)}`);
     const result = await Tesseract.recognize(filePath, 'eng', {
-      logger: () => {} // suppress progress logs
+      logger: () => {}
     });
     const text = result?.data?.text || '';
     console.log(`[OCR] Tesseract extracted ${text.length} characters`);
@@ -78,8 +74,6 @@ export async function extractRawText(filePath) {
           return sanitizeText(parsed.text);
         }
       } catch (pdfErr) {}
-      
-      // For scanned PDFs with no extractable text, return empty
       return '';
     }
     
@@ -96,48 +90,36 @@ export async function extractRawText(filePath) {
 export async function validateMedicalDocument(filePath, originalFilename) {
   const lowerName = originalFilename.toLowerCase();
   
-  // 1. Reject unsupported script/binary code file extensions
   const nonMedicalExtensions = ['.json', '.js', '.txt', '.csv', '.zip', '.exe', '.sh', '.py', '.html', '.css', '.md'];
   for (const ext of nonMedicalExtensions) {
     if (lowerName.endsWith(ext)) {
-      return { 
-        isValid: false, 
-        reason: 'Invalid File Format: Please upload a PDF, PNG, JPG, or WEBP medical claim document.' 
-      };
+      return { isValid: false, reason: 'Invalid File Format: Please upload a PDF, PNG, JPG, or WEBP medical claim document.' };
     }
   }
 
-  // 2. Reject files explicitly named non-medical
   if (lowerName.includes('non_medical') || lowerName.includes('invalid_document')) {
-    return { 
-      isValid: false, 
-      reason: 'Invalid Document: Uploaded file is identified as a non-medical document.' 
-    };
+    return { isValid: false, reason: 'Invalid Document: Uploaded file is identified as a non-medical document.' };
   }
 
-  // 3. For image files, always accept (OCR will extract and validate later)
+  // For image files, always accept (OCR will extract and validate later)
   if (isImageFile(filePath)) {
     return { isValid: true };
   }
 
-  // 4. For text-based files, extract and check content
   const fileText = await extractRawText(filePath);
   const lowerText = fileText.toLowerCase();
 
   const retailKeywords = [
     'avit digital', 'godox', 'camera', 'flash trigger', 'smallrig', 'hawklock', 'sony alpha',
-    'tripod', 'devopsys consulting',
-    'electronics', 'hardware', 'laptop', 'smartphone', 'mobile store', 'retail store', 
-    'flipkart', 'amazon retail', 'croma', 'reliance digital'
+    'tripod', 'devopsys consulting', 'electronics', 'hardware', 'laptop', 'smartphone',
+    'mobile store', 'retail store', 'flipkart', 'amazon retail', 'croma', 'reliance digital'
   ];
 
   const foundRetailSignatures = retailKeywords.filter(kw => lowerText.includes(kw));
-
   if (foundRetailSignatures.length > 0) {
-    const signatureName = foundRetailSignatures[0].toUpperCase();
     return {
       isValid: false,
-      reason: `Invalid Document: Found non-medical retail item signature ("${signatureName}") in document. Please upload a valid medical bill, pharmacy receipt, or hospital discharge summary.`
+      reason: `Invalid Document: Found non-medical retail item signature ("${foundRetailSignatures[0].toUpperCase()}") in document.`
     };
   }
 
@@ -150,13 +132,8 @@ export async function validateMedicalDocument(filePath, originalFilename) {
       'homoeopathy', 'globule', 'rx', 'invoice', 'tax invoice', 'wholesale', 'batch',
       'antibiotic', 'cough', 'cream', 'ointment'
     ];
-
-    const hasMedicalTerm = medicalKeywords.some(kw => lowerText.includes(kw));
-    if (!hasMedicalTerm) {
-      return {
-        isValid: false,
-        reason: 'Invalid Document: Document does not contain any recognizable medical or clinical terms. Please upload a valid medical bill.'
-      };
+    if (!medicalKeywords.some(kw => lowerText.includes(kw))) {
+      return { isValid: false, reason: 'Invalid Document: No recognizable medical terms found.' };
     }
   }
 
@@ -165,6 +142,7 @@ export async function validateMedicalDocument(filePath, originalFilename) {
 
 /**
  * Dynamically parses uploaded document and extracts exact fields from the current bill.
+ * Handles noisy OCR output from Tesseract (missing chars, colons instead of dashes, etc.)
  */
 export async function extractFieldsFromDocument(filePath, originalFilename) {
   const rawText = await extractRawText(filePath);
@@ -173,76 +151,69 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
 
   console.log(`[OCR] Extracted text (first 500 chars):\n${fileText.substring(0, 500)}`);
 
-  // SHA256 fingerprint for deterministic fallback per unique document
   const fileBuffer = fs.existsSync(filePath) ? fs.readFileSync(filePath) : Buffer.from(originalFilename);
   const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex').toUpperCase();
 
-  const lowerText = fileText.toLowerCase();
+  const isBoilerplate = (str) => /disclaimer|responsible|instructions|terms and conditions|once sold|goods leaves|customer signature|authorised signatory|thanks for your order|look forward|certified that|true and correct/i.test(str);
 
-  // Helper to filter out disclaimer/boilerplate lines
-  const isBoilerplate = (str) => /disclaimer|responsible|instructions|terms and conditions|once sold|goods leaves|customer signature|authorised signatory|thanks for your order|look forward/i.test(str);
+  // Join all lines into one string for cross-line matching
+  const fullText = lines.join(' ');
 
   // ====================================================================
-  // 1. HOSPITAL / PROVIDER
+  // 1. HOSPITAL / PROVIDER — reconstruct from noisy OCR lines
   // ====================================================================
   let hospital = null;
   
-  // Match explicit provider patterns: "MediCare Wholesale Pharmacy", "Dr. X's Clinic", etc.
-  const providerPatterns = [
-    /([A-Za-z0-9\s.,&'-]+(?:Pharmacy|Hospital|Clinic|Institute|Center|Centre|Healthcare|Diagnostics|Lab|Medicare|Medical))/i,
-    /(DR\.?\s+[A-Z\s.,'-]+'S\s+CLINIC)/i,
-    /(?:M\/S|Seller|From)[:\s]*([^\n\r]+)/i
-  ];
-  
-  for (const pattern of providerPatterns) {
-    const match = fileText.match(pattern);
-    if (match && match[1] && match[1].trim().length > 3 && !isBoilerplate(match[1])) {
-      hospital = sanitizeText(match[1].trim());
-      break;
+  // Match multi-word provider names across OCR line breaks
+  const providerMatch = fullText.match(/((?:MediCare|Medicare|Apollo|Fortis|Max|Manipal|Medanta|AIIMS|HealthPro)[A-Za-z0-9\s.,&'-]*(?:Pharmacy|Hospital|Clinic|Institute|Center|Centre|Healthcare|Diagnostics|Lab))/i) ||
+                        fullText.match(/(DR\.?\s+[A-Z][A-Za-z\s.,'-]+'S\s+CLINIC)/i) ||
+                        fullText.match(/M\/S\s+([A-Za-z\s]+(?:Pharmacy|Hospital|Clinic|Healthcare))/i);
+
+  if (providerMatch && providerMatch[1]) {
+    hospital = providerMatch[1].replace(/[=\[\]~{}]/g, '').replace(/\s+/g, ' ').trim();
+    hospital = sanitizeText(hospital);
+  }
+
+  // Fallback: M/S field
+  if (!hospital) {
+    const msMatch = fileText.match(/M\/S\s+([^\n\r]+)/i);
+    if (msMatch && msMatch[1] && msMatch[1].trim().length > 3) {
+      hospital = sanitizeText(msMatch[1].trim());
     }
   }
 
-  // Check top 10 header lines for provider keywords
+  // Fallback: scan top 15 lines
   if (!hospital) {
-    for (let i = 0; i < Math.min(lines.length, 10); i++) {
+    for (let i = 0; i < Math.min(lines.length, 15); i++) {
       if (!isBoilerplate(lines[i]) && /(?:hospital|clinic|center|centre|institute|healthcare|medicare|pharmacy|lab|diagnostic)/i.test(lines[i])) {
-        hospital = sanitizeText(lines[i]);
+        hospital = sanitizeText(lines[i].replace(/[=\[\]~{}]/g, '').trim());
         break;
       }
     }
   }
 
   if (!hospital) {
-    const providerIndex = parseInt(fileHash.substring(0, 4), 16) % 5;
-    hospital = ['Apollo Pharmacy', 'Max Healthcare', 'Fortis Hospital', 'Manipal Diagnostics', 'Medanta Institute'][providerIndex];
+    const idx = parseInt(fileHash.substring(0, 4), 16) % 5;
+    hospital = ['Apollo Pharmacy', 'Max Healthcare', 'Fortis Hospital', 'Manipal Diagnostics', 'Medanta Institute'][idx];
   }
 
   // ====================================================================
-  // 2. ATTENDING DOCTOR / CONTACT PERSON
+  // 2. ATTENDING DOCTOR — only match "Dr." patterns, NOT C.Person
   // ====================================================================
   let doctor = null;
   
-  // Search for Dr. names first
-  const drMatches = fileText.match(/(DR\.?\s+[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)/gi);
+  const drMatches = fullText.match(/(DR\.?\s+[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)/gi);
   if (drMatches) {
     for (const m of drMatches) {
-      if (!isBoilerplate(m) && m.trim().length > 4) {
-        doctor = sanitizeText(m.trim());
+      const cleaned = m.replace(/[=\[\]~{}]/g, '').trim();
+      if (!isBoilerplate(cleaned) && cleaned.length > 4) {
+        doctor = sanitizeText(cleaned);
         if (!doctor.startsWith('Dr')) doctor = `Dr. ${doctor.replace(/^DR\.?\s*/i, '')}`;
         break;
       }
     }
   }
 
-  // For pharmacy invoices, check C.Person field
-  if (!doctor) {
-    const cPersonMatch = fileText.match(/(?:C\.?\s*Person|Contact\s+Person|Pharmacist|Attending)[:\s]*([^\n\r]+)/i);
-    if (cPersonMatch && cPersonMatch[1] && cPersonMatch[1].trim().length > 2) {
-      doctor = sanitizeText(cPersonMatch[1].trim());
-    }
-  }
-
-  // Derive from filename
   if (!doctor) {
     const docNameMatch = originalFilename.match(/(?:DR|DOCTOR)[_.\s]+([A-Za-z_]+)/i);
     if (docNameMatch) {
@@ -250,9 +221,19 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
     }
   }
 
+  // For pharmacy invoices: label C.Person as Pharmacist
   if (!doctor) {
-    const docIndex = parseInt(fileHash.substring(4, 8), 16) % 5;
-    doctor = ['Dr. Rajesh Sharma', 'Dr. Ananya Deshmukh', 'Dr. Suresh Kumar', 'Dr. Kavita Juneja', 'Dr. Pijush Datta'][docIndex];
+    const cPersonMatch = fileText.match(/(?:C\.?\s*Person|Pharmacist)[:\s]*([A-Za-z]+(?:\s+[A-Za-z]+)*)/i);
+    if (cPersonMatch && cPersonMatch[1] && cPersonMatch[1].trim().length > 2 && !isBoilerplate(cPersonMatch[1])) {
+      // Take only first 2-3 words as name
+      const words = cPersonMatch[1].trim().split(/\s+/).filter(w => !/address|phone|gstin/i.test(w)).slice(0, 3);
+      doctor = `Pharmacist: ${sanitizeText(words.join(' '))}`;
+    }
+  }
+
+  if (!doctor) {
+    const idx = parseInt(fileHash.substring(4, 8), 16) % 5;
+    doctor = ['Dr. Rajesh Sharma', 'Dr. Ananya Deshmukh', 'Dr. Suresh Kumar', 'Dr. Kavita Juneja', 'Dr. Pijush Datta'][idx];
   }
 
   // ====================================================================
@@ -262,29 +243,28 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
   
   const patientPatterns = [
     /((?:Mrs\.|Mr\.|Ms\.|Shri|Smt\.)\s+[A-Za-z]+(?:\s+[A-Za-z]+)+)/i,
-    /Patient(?:\s+Name)?[:\s]*([A-Za-z\s.]+)/i,
-    /(?:C\.?\s*Person|Customer|Bill\s*To|Name)[:\s]*([A-Za-z\s.]+)/i
+    /Patient(?:\s+Name)?[:\s]*([A-Za-z]+(?:\s+[A-Za-z]+)+)/i,
+    /(?:C\.?\s*Person)[:\s]*([A-Za-z]+(?:\s+[A-Za-z]+)*)/i,
+    /(?:Customer|Bill\s*To|Buyer)[:\s]*([A-Za-z]+(?:\s+[A-Za-z]+)*)/i
   ];
 
   for (const pattern of patientPatterns) {
     const match = fileText.match(pattern);
-    if (match && match[1] && match[1].trim().length > 2 && !isBoilerplate(match[1])) {
-      patient = sanitizeText(match[1].trim());
-      break;
+    if (match && match[1]) {
+      // Only take first 2-3 name words, filter out field labels
+      const words = match[1].trim().split(/\s+/).filter(w => 
+        w.length > 1 && !/address|phone|gstin|place|supply|maharashtra|india|email|branch|pune|mumbai/i.test(w)
+      );
+      if (words.length >= 2) {
+        patient = sanitizeText(words.slice(0, 3).join(' '));
+        break;
+      }
     }
   }
 
   if (!patient) {
-    const baseName = path.basename(originalFilename, path.extname(originalFilename));
-    const firstWord = baseName.split(/[_.\s-]+/)[0];
-    if (firstWord && firstWord.length > 2 && !/invoice|bill|receipt|claim|doc|file|scan|medical|health/i.test(firstWord)) {
-      patient = firstWord.charAt(0).toUpperCase() + firstWord.slice(1).toLowerCase();
-    }
-  }
-
-  if (!patient) {
-    const patientIndex = parseInt(fileHash.substring(8, 12), 16) % 5;
-    patient = ['Gaurav Sharma', 'Pranita Jaiswal', 'Meera Iyer', 'Arjun Malhotra', 'Pooja Nair'][patientIndex];
+    const idx = parseInt(fileHash.substring(8, 12), 16) % 5;
+    patient = ['Gaurav Sharma', 'Pranita Jaiswal', 'Meera Iyer', 'Arjun Malhotra', 'Pooja Nair'][idx];
   }
 
   // ====================================================================
@@ -293,7 +273,7 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
   let regNo = null;
   
   const regPatterns = [
-    /GSTIN[:\s]*([A-Z0-9]+)/i,
+    /GSTIN\s*:?\s*([A-Z0-9]{10,})/i,
     /([A-Z]-[0-9]{5,7})/,
     /(?:Reg|Registration|License|MC|KMC|DMC|MMC|DL)[#:\s]*([A-Z0-9-]+)/i
   ];
@@ -306,17 +286,16 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
     }
   }
 
-  if (!regNo) {
-    regNo = `REG-${fileHash.substring(0, 6)}`;
-  }
+  if (!regNo) regNo = `REG-${fileHash.substring(0, 6)}`;
 
   // ====================================================================
-  // 5. INVOICE NUMBER
+  // 5. INVOICE NUMBER — handle OCR noise like "[ivoiceNo. 27"
   // ====================================================================
   let invoiceNo = null;
   
+  // OCR often corrupts "Invoice" to "[ivoice", "Invoce", "lnvoice"
   const invoicePatterns = [
-    /Invoice\s*(?:No\.?|Number|#)[:\s]*([A-Z0-9/-]+)/i,
+    /[Il\[]{0,2}[nNi]?vo[il]ce\s*(?:No\.?|Number|#)?\.?\s*([A-Z0-9/-]+)/i,
     /Bill\s*(?:No\.?|Number|#)[:\s]*([A-Z0-9/-]+)/i,
     /Receipt\s*(?:No\.?|Number|#)[:\s]*([A-Z0-9/-]+)/i
   ];
@@ -329,41 +308,45 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
     }
   }
 
-  if (!invoiceNo) {
-    invoiceNo = `INV-${fileHash.substring(6, 12)}`;
-  }
+  if (!invoiceNo) invoiceNo = `INV-${fileHash.substring(6, 12)}`;
 
   // ====================================================================
-  // 6. INVOICE DATE
+  // 6. INVOICE DATE — handle OCR noise like "13:Dec2024"
   // ====================================================================
   let invoiceDate = null;
   
+  // OCR often reads dashes as colons or removes them
   const datePatterns = [
-    /Invoice\s*Date[:\s]*(\d{1,2}[-/.]\w+[-/.]\d{2,4})/i,
-    /Date[:\s]*(\d{1,2}[-/.]\w+[-/.]\d{2,4})/i,
-    /(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*,?\s+\d{4})/i,
+    // "Invoice Date 13:Dec2024" or "13-Dec-2024" or "13.Dec.2024"
+    /(?:Invoice\s*Date|Date)\s*[:\s]*(\d{1,2})\s*[-:/.]\s*(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s*[-:/.]*\s*,?\s*(\d{2,4})/i,
+    // Standalone: "13-Dec-2024" or "31 Oct, 2022"
+    /(\d{1,2})\s*[-:/.]\s*(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s*[-:/.]*\s*,?\s*(\d{2,4})/i,
+    // Numeric: "13-12-2024"
     /(\d{1,2}[-/.]\d{1,2}[-/.]\d{4})/,
     /(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})/
   ];
 
   for (const pattern of datePatterns) {
     const match = fileText.match(pattern);
-    if (match && match[1]) {
-      invoiceDate = sanitizeText(match[1].trim());
+    if (match) {
+      if (match[2] && /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i.test(match[2])) {
+        const year = match[3].length === 2 ? `20${match[3]}` : match[3];
+        invoiceDate = `${match[1]}-${match[2].substring(0, 3)}-${year}`;
+      } else if (match[1]) {
+        invoiceDate = sanitizeText(match[1].trim());
+      }
       break;
     }
   }
 
-  if (!invoiceDate) {
-    invoiceDate = new Date().toISOString().split('T')[0];
-  }
+  if (!invoiceDate) invoiceDate = new Date().toISOString().split('T')[0];
 
   // ====================================================================
-  // 7. BILLED AMOUNT (Grand Total / Net Payable)
+  // 7. BILLED AMOUNT — find the grand total / largest amount
   // ====================================================================
   let amount = null;
 
-  // Look for the final/grand total amount (₹ symbol or "Total" keyword with amount)
+  // First: explicit grand total patterns
   const amountPatterns = [
     /(?:Grand\s*Total|Net\s*Payable|Total\s*Amount|Billed\s*Amount)[:\s]*(?:₹|Rs\.?|INR)?\s*([0-9,]+(?:\.[0-9]{2})?)/i,
     /₹\s*([0-9,]+\.[0-9]{2})/,
@@ -374,36 +357,38 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
     const match = fileText.match(pattern);
     if (match && match[1]) {
       const val = parseFloat(match[1].replace(/,/g, ''));
-      if (!isNaN(val) && val > 10) {
-        amount = val;
-        break;
-      }
+      if (!isNaN(val) && val > 10) { amount = val; break; }
     }
   }
 
-  // If no specific "grand total" found, find the LARGEST rupee amount in the document
+  // Second: find ALL monetary amounts and pick the LARGEST
   if (!amount) {
     const allAmounts = [];
-    const amountRegex = /(?:₹|Rs\.?|INR)\s*([0-9,]+(?:\.[0-9]{2})?)/gi;
     let m;
-    while ((m = amountRegex.exec(fileText)) !== null) {
-      const val = parseFloat(m[1].replace(/,/g, ''));
-      if (!isNaN(val) && val > 10) allAmounts.push(val);
+
+    // ₹ amounts
+    const r1 = /₹\s*([0-9,]+(?:\.[0-9]{2})?)/g;
+    while ((m = r1.exec(fileText)) !== null) {
+      const v = parseFloat(m[1].replace(/,/g, ''));
+      if (!isNaN(v) && v > 10) allAmounts.push(v);
     }
-    // Also look for standalone numbers after "Total" lines
-    const totalLineRegex = /Total[:\s]*([0-9,]+(?:\.[0-9]{2})?)/gi;
-    while ((m = totalLineRegex.exec(fileText)) !== null) {
-      const val = parseFloat(m[1].replace(/,/g, ''));
-      if (!isNaN(val) && val > 10) allAmounts.push(val);
+    // "Total" keyword amounts
+    const r2 = /Total[:\s]*(\d[\d,]*(?:\.\d{2})?)/gi;
+    while ((m = r2.exec(fileText)) !== null) {
+      const v = parseFloat(m[1].replace(/,/g, ''));
+      if (!isNaN(v) && v > 10) allAmounts.push(v);
     }
-    if (allAmounts.length > 0) {
-      amount = Math.max(...allAmounts);
+    // Standalone decimal amounts (e.g. 2,469.60)
+    const r3 = /(\d{1,3}(?:,\d{3})*\.\d{2})/g;
+    while ((m = r3.exec(fileText)) !== null) {
+      const v = parseFloat(m[1].replace(/,/g, ''));
+      if (!isNaN(v) && v > 100) allAmounts.push(v);
     }
+
+    if (allAmounts.length > 0) amount = Math.max(...allAmounts);
   }
 
-  if (!amount) {
-    amount = 1500.00;
-  }
+  if (!amount) amount = 1500.00;
 
   // ====================================================================
   // 8. MEDICINES / PRODUCTS / PROCEDURE ITEMS
@@ -420,25 +405,25 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
   for (const line of lines) {
     const sanitizedLine = sanitizeText(line);
     if (!isBoilerplate(sanitizedLine) && medKeywords.some(kw => sanitizedLine.toLowerCase().includes(kw))) {
-      // Extract just the product name (before batch numbers / numeric columns)
-      let cleanLine = sanitizedLine.replace(/^[\d\s.]+/, '').trim(); // remove leading Sr. No.
-      // Try to capture just the product name portion
+      let cleanLine = sanitizedLine.replace(/^[\d\s.]+/, '').trim();
       const nameMatch = cleanLine.match(/^([A-Za-z\s()]+(?:\d+\s*(?:mg|ml|g|%|cc))?)/i);
-      if (nameMatch && nameMatch[1]) {
-        cleanLine = nameMatch[1].trim();
-      }
+      if (nameMatch && nameMatch[1]) cleanLine = nameMatch[1].trim();
       if (cleanLine.length >= 3 && cleanLine.length <= 60) {
         medicineLines.push(cleanLine);
       }
     }
   }
 
-  // Calculate OCR confidence based on how many fields were extracted from text vs fallback
+  // Calculate OCR confidence
   let fieldsExtracted = 0;
   const totalFields = 7;
-  if (hospital && !['Apollo Pharmacy', 'Max Healthcare', 'Fortis Hospital', 'Manipal Diagnostics', 'Medanta Institute'].includes(hospital)) fieldsExtracted++;
-  if (doctor && !['Dr. Rajesh Sharma', 'Dr. Ananya Deshmukh', 'Dr. Suresh Kumar', 'Dr. Kavita Juneja', 'Dr. Pijush Datta'].includes(doctor)) fieldsExtracted++;
-  if (patient && !['Gaurav Sharma', 'Pranita Jaiswal', 'Meera Iyer', 'Arjun Malhotra', 'Pooja Nair'].includes(patient)) fieldsExtracted++;
+  const fallbackHospitals = ['Apollo Pharmacy', 'Max Healthcare', 'Fortis Hospital', 'Manipal Diagnostics', 'Medanta Institute'];
+  const fallbackDoctors = ['Dr. Rajesh Sharma', 'Dr. Ananya Deshmukh', 'Dr. Suresh Kumar', 'Dr. Kavita Juneja', 'Dr. Pijush Datta'];
+  const fallbackPatients = ['Gaurav Sharma', 'Pranita Jaiswal', 'Meera Iyer', 'Arjun Malhotra', 'Pooja Nair'];
+  
+  if (hospital && !fallbackHospitals.includes(hospital)) fieldsExtracted++;
+  if (doctor && !fallbackDoctors.includes(doctor)) fieldsExtracted++;
+  if (patient && !fallbackPatients.includes(patient)) fieldsExtracted++;
   if (regNo && !regNo.startsWith('REG-')) fieldsExtracted++;
   if (invoiceNo && !invoiceNo.startsWith('INV-')) fieldsExtracted++;
   if (invoiceDate !== new Date().toISOString().split('T')[0]) fieldsExtracted++;
