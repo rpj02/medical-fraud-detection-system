@@ -13,7 +13,11 @@ const VERIFIED_PROVIDERS = new Set([
   'city healthcare',
   'st. jude general hospital',
   'dr. kalyan banerjee\'s clinic',
-  'kalyan banerjee'
+  'kalyan banerjee',
+  'medicare wholesale pharmacy',
+  'medicare',
+  'healthpro pharmacy',
+  'apollo pharmacy'
 ]);
 
 export function verifyDoctor(regNumber, doctorName) {

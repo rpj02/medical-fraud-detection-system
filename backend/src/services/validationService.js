@@ -2,6 +2,7 @@
 const KNOWN_MEDICINES = new Set([
   'paracetamol 500mg',
   'paracetamol 650mg',
+  'paracetamol',
   'amoxicillin 500mg',
   'cefixime 200mg',
   'cefradine 500mg',
@@ -15,6 +16,10 @@ const KNOWN_MEDICINES = new Set([
   'azithromycin 500mg',
   'ciprofloxacin 500mg',
   'losartan 50mg',
+  'cough syrup',
+  'antibiotic cream',
+  'antibiotic',
+  'ointment',
   'ruta',
   'calcarea',
   'agaricus',
