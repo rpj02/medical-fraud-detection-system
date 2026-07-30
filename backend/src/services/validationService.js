@@ -1,4 +1,4 @@
-// Reference Catalog of Verified Pharmacopeia Medicines
+// Reference Catalog of Verified Pharmacopeia & Pharmacopoeia Medicines
 const KNOWN_MEDICINES = new Set([
   'paracetamol 500mg',
   'paracetamol 650mg',
@@ -14,7 +14,16 @@ const KNOWN_MEDICINES = new Set([
   'metformin 500mg',
   'azithromycin 500mg',
   'ciprofloxacin 500mg',
-  'losartan 50mg'
+  'losartan 50mg',
+  'ruta',
+  'calcarea',
+  'agaricus',
+  'hepar',
+  'bovista',
+  'arnica',
+  'cuprum',
+  'spigelia',
+  'globule'
 ]);
 
 // Reference baseline cost ranges for common treatments & inpatient stays

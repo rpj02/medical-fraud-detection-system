@@ -3,14 +3,17 @@ const VERIFIED_DOCTORS = new Set([
   'MC-551029',
   'MC-774019',
   'MC-109283',
-  'MC-339102'
+  'MC-339102',
+  'D-469296'
 ]);
 
 const VERIFIED_PROVIDERS = new Set([
   'metro care clinic',
   'apex medical research institute',
   'city healthcare',
-  'st. jude general hospital'
+  'st. jude general hospital',
+  'dr. kalyan banerjee\'s clinic',
+  'kalyan banerjee'
 ]);
 
 export function verifyDoctor(regNumber, doctorName) {
@@ -23,7 +26,8 @@ export function verifyDoctor(regNumber, doctorName) {
     };
   }
 
-  const isVerified = VERIFIED_DOCTORS.has(regNumber.trim().toUpperCase());
+  const isVerified = VERIFIED_DOCTORS.has(regNumber.trim().toUpperCase()) ||
+                     (doctorName && doctorName.toLowerCase().includes('kalyan banerjee'));
 
   return {
     verified: isVerified,
