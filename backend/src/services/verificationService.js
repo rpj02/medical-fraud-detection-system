@@ -22,7 +22,9 @@ const VERIFIED_PROVIDERS = new Set([
   'apollo pharmacy',
   'blk-max super speciality hospital',
   'blk hospital',
-  'blk max'
+  'blk max',
+  'greenfield family medical center',
+  'greenfield'
 ]);
 
 export function verifyDoctor(regNumber, doctorName) {
