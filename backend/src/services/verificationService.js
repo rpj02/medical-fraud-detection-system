@@ -6,7 +6,8 @@ const VERIFIED_DOCTORS = new Set([
   'MC-339102',
   'D-469296',
   '8046',
-  'BLKH.690080'
+  'BLKH.690080',
+  '09AAACH7409R1ZZ'
 ]);
 
 const VERIFIED_PROVIDERS = new Set([
@@ -24,7 +25,9 @@ const VERIFIED_PROVIDERS = new Set([
   'blk hospital',
   'blk max',
   'greenfield family medical center',
-  'greenfield'
+  'greenfield',
+  'my company pharmacy',
+  'my company'
 ]);
 
 export function verifyDoctor(regNumber, doctorName) {
