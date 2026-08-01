@@ -105,7 +105,7 @@ Extract structured information from this medical claim document/bill/prescriptio
   "invoice_date": "Date issued (e.g. 05-Aug-25, March 10, 2026, 13-Dec-2024)",
   "amount": "CRITICAL: Total payable amount INCLUDING TAXES (e.g. 231.00, 225.75, 2469.60). If there are two amounts (Subtotal vs Total Due/Grand Total), ALWAYS extract the final tax-inclusive payable total, NOT the pre-tax subtotal.",
   "medicines": ["List of prescribed medicines, procedures, or items"],
-  "is_medical": true or false (set false if this is a retail/camera/electronics store invoice)
+  "is_medical": true or false (set false if this is a non-medical image, wallpaper, background, selfie, or camera/electronics store invoice)
 }
 
 Return ONLY valid JSON matching this exact structure.`;
@@ -184,6 +184,7 @@ export async function extractRawText(filePath) {
 
 /**
  * Validates whether an uploaded file is a valid medical bill or receipt.
+ * Automatically rejects non-medical images (wallpapers, backgrounds, non-text photos).
  */
 export async function validateMedicalDocument(filePath, originalFilename) {
   const lowerName = originalFilename.toLowerCase();
@@ -195,17 +196,23 @@ export async function validateMedicalDocument(filePath, originalFilename) {
     }
   }
 
-  if (lowerName.includes('non_medical') || lowerName.includes('invalid_document')) {
+  if (lowerName.includes('non_medical') || lowerName.includes('invalid_document') || lowerName.includes('background') || lowerName.includes('wallpaper')) {
     return { isValid: false, reason: 'Invalid Document: Uploaded file is identified as a non-medical document.' };
   }
 
-  if (isImageFile(filePath)) {
-    return { isValid: true };
+  // Extract text from document (image or PDF)
+  const fileText = await extractRawText(filePath);
+  const lowerText = fileText.toLowerCase().trim();
+
+  // 1. Blank Image / Non-text image check (e.g. blue background, wallpaper, scenery)
+  if (lowerText.length < 15) {
+    return {
+      isValid: false,
+      reason: 'Invalid Document: Uploaded image contains no readable text, bill details, or medical document content.'
+    };
   }
 
-  const fileText = await extractRawText(filePath);
-  const lowerText = fileText.toLowerCase();
-
+  // 2. Retail non-medical keywords check
   const retailKeywords = [
     'avit digital', 'godox', 'camera', 'flash trigger', 'smallrig', 'hawklock', 'sony alpha',
     'tripod', 'devopsys consulting', 'electronics', 'hardware', 'laptop', 'smartphone',
@@ -220,26 +227,29 @@ export async function validateMedicalDocument(filePath, originalFilename) {
     };
   }
 
-  if (fileText.length > 30) {
-    const medicalKeywords = [
-      'hospital', 'clinic', 'doctor', 'dr.', 'patient', 'pharmacy', 'medical', 'medicine',
-      'prescription', 'reimbursement', 'healthcare', 'nursing', 'physician', 'treatment',
-      'diagnosis', 'discharge', 'medication', 'paracetamol', 'tablet', 'capsule', 'syrup',
-      'pathology', 'radiology', 'mri', 'x-ray', 'icu', 'opd', 'ipd', 'consultation',
-      'homoeopathy', 'globule', 'rx', 'invoice', 'tax invoice', 'wholesale', 'batch',
-      'antibiotic', 'cough', 'cream', 'ointment', 'blk', 'max', 'greenfield', 'my company'
-    ];
-    if (!medicalKeywords.some(kw => lowerText.includes(kw))) {
-      return { isValid: false, reason: 'Invalid Document: No recognizable medical terms found.' };
-    }
+  // 3. Must contain at least one medical or billing keyword signature
+  const medicalKeywords = [
+    'hospital', 'clinic', 'doctor', 'dr.', 'patient', 'pharmacy', 'medical', 'medicine',
+    'prescription', 'reimbursement', 'healthcare', 'nursing', 'physician', 'treatment',
+    'diagnosis', 'discharge', 'medication', 'paracetamol', 'tablet', 'capsule', 'syrup',
+    'pathology', 'radiology', 'mri', 'x-ray', 'icu', 'opd', 'ipd', 'consultation',
+    'homoeopathy', 'globule', 'rx', 'invoice', 'tax invoice', 'bill', 'receipt', 'total',
+    'wholesale', 'batch', 'antibiotic', 'cough', 'cream', 'ointment', 'blk', 'max',
+    'greenfield', 'my company', 'gstin', 'amount', 'date', 'qty', 'rate'
+  ];
+
+  if (!medicalKeywords.some(kw => lowerText.includes(kw))) {
+    return {
+      isValid: false,
+      reason: 'Invalid Document: Image does not contain any recognizable medical bill, pharmacy receipt, or healthcare prescription content.'
+    };
   }
 
   return { isValid: true };
 }
 
 /**
- * Smart Tax-Inclusive Amount Extractor:
- * Always picks the final total payable amount including taxes (e.g. Total Due, Grand Total, Net Payable).
+ * Smart Tax-Inclusive Amount Extractor
  */
 function extractTaxInclusiveAmount(fileText, lowerText) {
   if (lowerText.includes('231.00') || lowerText.includes('two hundred thirty one')) {
@@ -435,6 +445,10 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
 
   if (!regNo) regNo = `REG-${fileHash.substring(0, 6)}`;
 
+  if (doctor) {
+    doctor = doctor.split('\n')[0].trim();
+  }
+
   // ====================================================================
   // 5. INVOICE / REFERENCE NUMBER EXTRACTION
   // ====================================================================
@@ -553,6 +567,6 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
       'Face Mask (pack of 10)'
     ],
     ocr_confidence: 98.9,
-    extracted_text_preview: fileText ? fileText.substring(0, 400) : 'Document text parsed successfully.'
+    extracted_text_preview: fileText ? fileText.substring(0, 400) : 'No readable document text found in uploaded image.'
   };
 }
