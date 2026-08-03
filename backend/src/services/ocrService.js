@@ -363,6 +363,18 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
   }
 
   if (!hospital) {
+    // Scan all lines for hospital/pharmacy/clinic/provider keywords
+    for (const line of lines) {
+      if (/hospital|clinic|pharmacy|medical center|healthcare|diagnostics|labs|chemist|apothecary|wellness/i.test(line) &&
+          !/patient|doctor|physician|invoice|date|page|consultation|address|tel:|phone:|fax:|email:/i.test(line) &&
+          line.length > 5 && line.length < 100) {
+        hospital = sanitizeText(line.replace(/[=\[\]~{}#:*]/g, '').trim());
+        break;
+      }
+    }
+  }
+
+  if (!hospital) {
     for (let i = 0; i < Math.min(lines.length, 5); i++) {
       const line = lines[i];
       if (!isBoilerplate(line) && line.length > 3 && !/patient|doctor|invoice|date|page|consultation|meerut|uttar pradesh/i.test(line)) {
@@ -391,6 +403,20 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
     doctor = 'Dr. Kalyan Banerjee';
   }
 
+  if (!doctor) {
+    // Scan lines for doctor labels or prefixes
+    for (const line of lines) {
+      const docMatch = line.match(/(?:Dr\.|Dr\s+|Doctor|Physician|Pharmacist|Consultant|Attending\s+Physician)\s*[:.-]?\s*([A-Za-z\s.]{3,50})/i);
+      if (docMatch && docMatch[1]) {
+        const cleaned = docMatch[1].trim();
+        if (cleaned.length > 3 && !/hospital|clinic|pharmacy|registration|licence|date|patient/i.test(cleaned)) {
+          doctor = cleaned.startsWith('Dr') ? cleaned : `Dr. ${cleaned}`;
+          break;
+        }
+      }
+    }
+  }
+
   if (!doctor || doctor.length < 3) {
     doctor = 'Attending Physician (Unspecified)';
   }
@@ -408,6 +434,19 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
     patient = 'Gaurav Sharma';
   } else if (lowerText.includes('pranita jaiswal')) {
     patient = 'Mrs. Pranita Jaiswal';
+  }
+
+  if (!patient) {
+    for (const line of lines) {
+      const patMatch = line.match(/(?:Patient\s*Name|Patient|Customer\s*Name|Customer|Bill\s+To|Billed\s+To|Name)\s*[:.-]?\s*([A-Za-z\s.]{3,50})/i);
+      if (patMatch && patMatch[1]) {
+        const cleaned = patMatch[1].trim();
+        if (cleaned.length > 2 && !/invoice|date|hospital|clinic|doctor|total|amount/i.test(cleaned)) {
+          patient = cleaned;
+          break;
+        }
+      }
+    }
   }
 
   if (!patient || patient.length < 2) {
@@ -431,7 +470,8 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
     const regPatterns = [
       /GSTIN\s*[-:]*\s*([A-Z0-9]{10,})/i,
       /State\s*Registration\s*No\.?\s*:?\s*([A-Z0-9-]+)/i,
-      /Registration\s*No\.?\s*:?\s*([A-Z0-9-]+)/i
+      /Registration\s*No\.?\s*:?\s*([A-Z0-9-]+)/i,
+      /(?:Reg\s*No|Reg\.?\s*Code|Lic(?:ense)?\s*No|GST|GSTIN)\s*[:.-]?\s*([A-Z0-9/-]{4,20})/i
     ];
 
     for (const pattern of regPatterns) {
@@ -467,7 +507,8 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
   if (!invoiceNo) {
     const invoicePatterns = [
       /Invoice\s*Number\s*([0-9A-Z/_-]+)/i,
-      /Invoice\s*No\.?\s*:?\s*([0-9A-Z/-]+)/i
+      /Invoice\s*No\.?\s*:?\s*([0-9A-Z/-]+)/i,
+      /(?:Invoice|Bill|Receipt|Ref|Reference)\s*(?:No|Num|\#)\s*[:.-]?\s*([0-9A-Z/_-]{3,20})/i
     ];
 
     for (const pattern of invoicePatterns) {
@@ -501,7 +542,8 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
     const datePatterns = [
       /Invoice\s*Date\s*(\d{2}-[A-Za-z]{3}-\d{2,4})/i,
       /Date\s*Issued[:\s]*([A-Za-z]+\s+\d{1,2},?\s+\d{4})/i,
-      /(\d{2}-[A-Za-z]{3}-\d{2,4})/i
+      /(\d{2}-[A-Za-z]{3}-\d{2,4})/i,
+      /(?:Date|Invoice\s*Date|Bill\s*Date)\s*[:.-]?\s*(\d{1,4}[-/.\s]\d{1,2}[-/.\s]\d{1,4}|\d{1,2}\s+[A-Za-z]{3,10}\s+\d{2,4})/i
     ];
 
     for (const pattern of datePatterns) {
@@ -539,13 +581,18 @@ export async function extractFieldsFromDocument(filePath, originalFilename) {
     const medKeywords = [
       'paracetamol', 'cough syrup', 'face mask', 'telemedicine', 'consultation', 'allergy test', 'zyrtec',
       'brevipil', 'pan', 'emset', 'lopez', 'thyronorm', 'thiamine',
-      'mg', 'ml', 'ug', 'mcg', 'tablet', 'tab', 'capsule', 'cap', 'syrup', 'inj', 'gel', 'inhaler', 'cream', 'ointment', 'drops'
+      'mg', 'ml', 'ug', 'mcg', 'tablet', 'tab', 'capsule', 'cap', 'syrup', 'inj', 'gel', 'inhaler', 'cream', 'ointment', 'drops',
+      'vaccine', 'injection', 'consult', 'test', 'profile', 'scan', 'x-ray'
     ];
 
     for (const line of lines) {
       const sanitizedLine = sanitizeText(line);
-      if (!isBoilerplate(sanitizedLine) && medKeywords.some(kw => sanitizedLine.toLowerCase().includes(kw))) {
+      if (!isBoilerplate(sanitizedLine) && (
+        medKeywords.some(kw => sanitizedLine.toLowerCase().includes(kw)) ||
+        /\b(?:tab|cap|syr|inj|t\.b\.)\b/i.test(sanitizedLine)
+      )) {
         let cleanLine = sanitizedLine.replace(/^[\d\s.]+/, '').trim();
+        cleanLine = cleanLine.replace(/\s+\d+(?:\.\d{2})?\s*$/, '').trim();
         if (cleanLine.length >= 3 && cleanLine.length <= 80 && !isBoilerplate(cleanLine)) {
           medicineLines.push(cleanLine);
         }
